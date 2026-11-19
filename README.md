@@ -1,0 +1,132 @@
+# 本地个人知识库 Agent（带 RAG）
+
+一个**可以完全跑在自己电脑上**的最小知识库问答 Agent：把 `.md` / `.txt` 放进 `docs/`，导入后就能用中文提问，回答会附上来源片段。
+
+- **Ollama**：本地大模型 + 本地 embedding，数据不出本机
+- **Chroma**：本地向量库，数据存在 `./chroma-data/`
+- **Node.js**：只用内置 `fetch` / `readline` / `crypto`，唯一第三方依赖是 `chromadb`
+- **不需要 Docker、不需要 Python、不需要云服务、不需要 API Key**
+
+```
+docs/*.md|txt ──切块──> Ollama /api/embed ──> Chroma 持久化
+                                                  │
+用户提问 ──> Ollama /api/embed ──> Chroma 检索 ───┘
+                                      │
+             检索片段 + 问题 ──> Ollama /api/chat(tools) ──> 带来源的回答
+                                      ↑                    │
+                                      └── 可换关键词追加检索 ─┘  (Agent 循环)
+```
+
+## 快速开始
+
+前置条件：**Node.js ≥ 22**、[Ollama](https://ollama.com/download) 已安装并运行（`ollama serve`）。
+
+```bash
+# 1. 安装依赖
+npm install
+
+# 2. 下载模型（首次约 3.1GB：qwen2.5:3b 1.9GB + bge-m3 1.2GB）
+npm run models
+
+# 3. 另开一个终端启动 Chroma（保持窗口不关）
+npm run chroma
+
+# 4. 把自己的 .md / .txt 放进 docs/（仓库自带两份示例文档）
+#    然后导入，可重复执行，改过的文件会自动更新
+npm run ingest
+
+# 5. 开始对话
+npm start
+```
+
+一次性提问（适合脚本调用）：
+
+```bash
+npm run ask -- "我的项目代号是什么？"
+```
+
+启动前体检：
+
+```bash
+npm run doctor
+```
+
+## 命令一览
+
+| 命令 | 作用 |
+|---|---|
+| `npm run chroma` | 启动本地 Chroma 服务（`127.0.0.1:8000`） |
+| `npm run models` | 拉取对话模型与向量模型 |
+| `npm run doctor` | 检查 Ollama / 模型 / Chroma / 集合状态 |
+| `npm run ingest` | 幂等导入 `docs/` 下的文档 |
+| `npm run reset` | 删除集合并重建（切换向量模型后必须使用） |
+| `npm start` | 进入交互式对话 |
+| `npm run ask -- "问题"` | 单次提问并退出 |
+
+对话中的斜杠命令：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/clear`、`/help`、`/exit`。
+
+## 配置
+
+复制 `.env.example` 为 `.env` 后按需修改；`src/config.js` 内置了一个极简 `KEY=VALUE` 读取器，没有 `.env` 也能用默认值启动，系统环境变量优先级更高。
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama 地址 |
+| `CHAT_MODEL` | `qwen2.5:3b` | 对话模型，需支持 tool calling；中文可选 `qwen2.5:7b` |
+| `EMBED_MODEL` | `bge-m3` | 向量模型，支持 100+ 语言；更轻量可选 `nomic-embed-text` |
+| `CHROMA_HOST` / `CHROMA_PORT` | `127.0.0.1` / `8000` | Chroma 地址 |
+| `COLLECTION` | `personal_kb` | 集合名 |
+| `TOP_K` | `4` | 每次检索返回的片段数 |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `300` / `60` | 切块字符数与重叠字符数 |
+| `MAX_TOOL_ROUNDS` | `3` | Agent 最多追加检索几轮 |
+| `HISTORY_TURNS` | `5` | 保留的对话轮数 |
+| `DOCS_DIR` | `docs` | 文档目录 |
+
+> 修改端口时不必改 `package.json`：启动服务用 `CHROMA_PORT=8123 npm run chroma`，同时在 `.env` 里写 `CHROMA_PORT=8123` 让 Node 端连到同一端口（`.env` 不会自动注入到 `chroma` 这个 shell 脚本）。
+
+## 目录结构
+
+```
+.
+├── package.json        # 依赖与 npm scripts
+├── .env.example        # 配置样例
+├── docs/               # 放你自己的 .md / .txt（支持子目录）
+├── chroma-data/        # Chroma 持久化数据（自动生成，已 gitignore）
+└── src/
+    ├── config.js       # 环境变量与默认值
+    ├── ollama.js       # /api/embed、/api/chat、/api/tags
+    ├── store.js        # Chroma 集合、写入、向量检索、清理
+    ├── ingest.js       # 扫描文档、切块、幂等导入
+    ├── agent.js        # 系统提示词 + 工具调用循环 + RAG 兜底
+    ├── chat.js         # 交互式 REPL
+    ├── ask.js          # 单次提问
+    └── doctor.js       # 依赖体检
+```
+
+## 实现要点
+
+- **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
+- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。本地 3B 模型常常不会主动输出 tool call，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；换成 `qwen3` / `qwen2.5:7b` 会更频繁地触发后续工具调用。
+- **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
+- **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
+
+## 常见问题
+
+**Q：换 embedding 模型后报错「向量维度不匹配」？**
+A：不同模型向量维度不同。执行 `npm run reset && npm run ingest` 重建即可；程序也会在发现集合的 `embed_model` 与当前配置不一致时主动提示。
+
+**Q：提示无法连接 Chroma？**
+A：`npm run chroma` 需要在一个独立终端里持续运行，它是本地服务而不是一次性命令。
+
+**Q：提示 Ollama 里没有模型？**
+A：执行 `npm run models`，或手动 `ollama pull qwen2.5:3b && ollama pull bge-m3`。可用 `ollama list` 确认。
+
+**Q：回答「知识库中没有相关信息」但文档里明明有？**
+A：先试 `npm run ask -- "<更贴近原文措辞的问题>"`；仍不行就调小 `CHUNK_SIZE`、增大 `TOP_K`，重新 `npm run ingest`。
+
+**Q：支持 PDF / Word 吗？**
+A：目前只支持 `.md` / `.markdown` / `.txt`，保持依赖最小。要加 PDF，只需在 `scanDocs()` 里解析出纯文本后复用 `chunkFile()` 即可。
+
+## 可扩展方向（本仓库刻意未实现）
+
+Web UI · 流式输出 · 重排序 / 混合检索 · PDF 解析 · 多用户与鉴权 · Docker Compose。

@@ -1,0 +1,22 @@
+{
+  "name": "local-kb-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "最简单的本地个人知识库 Agent：Ollama + Chroma + Node.js + RAG",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "chroma": "chroma run --path ./chroma-data --host ${CHROMA_HOST:-127.0.0.1} --port ${CHROMA_PORT:-8000}",
+    "models": "ollama pull qwen2.5:3b && ollama pull bge-m3",
+    "doctor": "node src/doctor.js",
+    "ingest": "node src/ingest.js",
+    "reset": "node src/ingest.js --reset",
+    "start": "node src/chat.js",
+    "ask": "node src/ask.js"
+  },
+  "dependencies": {
+    "chromadb": "^3.5.0"
+  }
+}
