@@ -25,7 +25,7 @@ docs/*.md|txt ──切块──> Ollama /api/embed ──> Chroma 持久化
 # 1. 安装依赖
 npm install
 
-# 2. 下载模型（首次约 3.1GB：qwen2.5:3b 1.9GB + bge-m3 1.2GB）
+# 2. 下载模型（首次约 8–9GB：qwen3.5:9b 6.6–7.6GB + bge-m3 约 1.2GB）
 npm run models
 
 # 3. 另开一个终端启动 Chroma（保持窗口不关）
@@ -72,14 +72,14 @@ npm run doctor
 | 变量 | 默认值 | 说明 |
 |---|---|---|
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama 地址 |
-| `CHAT_MODEL` | `qwen2.5:3b` | 对话模型，需支持 tool calling；中文可选 `qwen2.5:7b` |
+| `CHAT_MODEL` | `qwen3.5:9b` | 对话模型，需支持 tool calling；9B 更吃内存/显存，资源紧张可换 `qwen3.5:4b` |
 | `EMBED_MODEL` | `bge-m3` | 向量模型，支持 100+ 语言；更轻量可选 `nomic-embed-text` |
 | `CHROMA_HOST` / `CHROMA_PORT` | `127.0.0.1` / `8000` | Chroma 地址 |
 | `COLLECTION` | `personal_kb` | 集合名 |
 | `TOP_K` | `4` | 每次检索返回的片段数 |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `300` / `60` | 切块字符数与重叠字符数 |
-| `MAX_TOOL_ROUNDS` | `3` | Agent 最多追加检索几轮 |
-| `HISTORY_TURNS` | `5` | 保留的对话轮数 |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `60` | 切块字符数与重叠字符数 |
+| `MAX_TOOL_ROUNDS` | `5` | Agent 最多追加检索几轮 |
+| `HISTORY_TURNS` | `7` | 保留的对话轮数 |
 | `DOCS_DIR` | `docs` | 文档目录 |
 
 > 修改端口时不必改 `package.json`：启动服务用 `CHROMA_PORT=8123 npm run chroma`，同时在 `.env` 里写 `CHROMA_PORT=8123` 让 Node 端连到同一端口（`.env` 不会自动注入到 `chroma` 这个 shell 脚本）。
@@ -106,7 +106,8 @@ npm run doctor
 ## 实现要点
 
 - **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
-- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。本地 3B 模型常常不会主动输出 tool call，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；换成 `qwen3` / `qwen2.5:7b` 会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
+- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。即使模型支持 tool calling，也不能保证每次都会主动发起调用，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；`qwen3.5:9b` 这类更擅长工具调用的模型会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
+- **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，本项目只读取 `message.content`，因此思考过程不会混进回答；默认保留 thinking，如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
 - **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
 - **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
 
@@ -115,11 +116,14 @@ npm run doctor
 **Q：换 embedding 模型后报错「向量维度不匹配」？**
 A：不同模型向量维度不同。执行 `npm run reset && npm run ingest` 重建即可；程序也会在发现集合的 `embed_model` 与当前配置不一致时主动提示。
 
+**Q：只换对话模型（如改成 `qwen3.5:9b`）需要重建知识库吗？**
+A：不需要。`CHAT_MODEL` 只影响回答生成，向量仍由 `EMBED_MODEL` 产生；拉取新模型并确认 `npm run doctor` 通过即可直接提问。
+
 **Q：提示无法连接 Chroma？**
 A：`npm run chroma` 需要在一个独立终端里持续运行，它是本地服务而不是一次性命令。
 
 **Q：提示 Ollama 里没有模型？**
-A：执行 `npm run models`，或手动 `ollama pull qwen2.5:3b && ollama pull bge-m3`。可用 `ollama list` 确认。
+A：执行 `npm run models`，或手动 `ollama pull qwen3.5:9b && ollama pull bge-m3`。可用 `ollama list` 确认。
 
 **Q：回答「知识库中没有相关信息」但文档里明明有？**
 A：先试 `npm run ask -- "<更贴近原文措辞的问题>"`；仍不行就调小 `CHUNK_SIZE`、增大 `TOP_K`，重新 `npm run ingest`。

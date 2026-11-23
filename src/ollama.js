@@ -1,6 +1,6 @@
 import { config } from "./config.js";
 
-const TIMEOUT_MS = 300_000; // 本地小模型首次加载可能较慢
+const TIMEOUT_MS = 300_000; // 本地模型首次加载可能较慢
 
 function ollamaDown(err) {
   return new Error(
@@ -69,7 +69,7 @@ export async function chat({ messages, tools }) {
     stream: false,
     keep_alive: "10m",
     // Ollama 默认上下文较小，中文 RAG 资料容易被静默截断
-    options: { temperature: 0.1, num_ctx: 8192 },
+    options: { temperature: 0.1, num_ctx: 16384 },
   };
   if (tools?.length) body.tools = tools;
   const data = await post("/api/chat", body);

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "chroma": "chroma run --path ./chroma-data --host ${CHROMA_HOST:-127.0.0.1} --port ${CHROMA_PORT:-8000}",
-    "models": "ollama pull qwen2.5:3b && ollama pull bge-m3",
+    "models": "ollama pull qwen3.5:9b && ollama pull bge-m3",
     "doctor": "node src/doctor.js",
     "ingest": "node src/ingest.js",
     "reset": "node src/ingest.js --reset",

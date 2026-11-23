@@ -46,7 +46,7 @@ function positiveInt(key, fallback) {
 
 const raw = {
   ollamaHost: (env.OLLAMA_HOST || "http://127.0.0.1:11434").replace(/\/+$/, ""),
-  chatModel: env.CHAT_MODEL || "qwen2.5:3b",
+  chatModel: env.CHAT_MODEL || "qwen3.5:9b",
   embedModel: env.EMBED_MODEL || "bge-m3",
   chromaHost: env.CHROMA_HOST || "127.0.0.1",
   chromaPort: positiveInt("CHROMA_PORT", 8000),
@@ -55,8 +55,8 @@ const raw = {
   chunkSize: positiveInt("CHUNK_SIZE", 512),
   chunkOverlap: positiveInt("CHUNK_OVERLAP", 60),
   docsDir: env.DOCS_DIR || "docs",
-  maxToolRounds: positiveInt("MAX_TOOL_ROUNDS", 3),
-  historyTurns: positiveInt("HISTORY_TURNS", 5),
+  maxToolRounds: positiveInt("MAX_TOOL_ROUNDS", 5),
+  historyTurns: positiveInt("HISTORY_TURNS", 7),
 };
 
 // 换行优先断句可能把窗口提前到 60%，overlap 过大时会退化出大量极小片段
