@@ -106,7 +106,7 @@ npm run doctor
 ## 实现要点
 
 - **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
-- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。本地 3B 模型常常不会主动输出 tool call，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；换成 `qwen3` / `qwen2.5:7b` 会更频繁地触发后续工具调用。
+- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。本地 3B 模型常常不会主动输出 tool call，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；换成 `qwen3` / `qwen2.5:7b` 会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
 - **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
 - **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
 

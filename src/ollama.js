@@ -63,7 +63,14 @@ export async function embed(texts) {
 
 /** 非流式对话；传 tools 时模型可能返回 tool_calls。 */
 export async function chat({ messages, tools }) {
-  const body = { model: config.chatModel, messages, stream: false };
+  const body = {
+    model: config.chatModel,
+    messages,
+    stream: false,
+    keep_alive: "10m",
+    // Ollama 默认上下文较小，中文 RAG 资料容易被静默截断
+    options: { temperature: 0.1, num_ctx: 8192 },
+  };
   if (tools?.length) body.tools = tools;
   const data = await post("/api/chat", body);
   if (!data.message) throw new Error("Ollama /api/chat 的响应里没有 message 字段");

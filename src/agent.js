@@ -86,6 +86,15 @@ export async function answerOnce(question, history = []) {
     };
   };
 
+  const first = await runTool(question);
+  if (first.results.length === 0) {
+    // 空库直接短路：不给模型留凭常识发挥的机会
+    return {
+      answer: "知识库中没有相关信息。请先把 .md / .txt 文档放进 docs/，然后执行 npm run ingest。",
+      sources: [],
+    };
+  }
+
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history.slice(-config.historyTurns * 2),
@@ -95,7 +104,7 @@ export async function answerOnce(question, history = []) {
       content: "",
       tool_calls: [{ function: { name: TOOL_NAME, arguments: { query: question } } }],
     },
-    { role: "tool", content: JSON.stringify(await runTool(question)) },
+    { role: "tool", tool_name: TOOL_NAME, content: JSON.stringify(first) },
   ];
 
   for (let round = 0; round < config.maxToolRounds; round++) {
@@ -121,7 +130,11 @@ export async function answerOnce(question, history = []) {
       } else {
         result = { error: `未知工具：${name}` };
       }
-      messages.push({ role: "tool", content: JSON.stringify(result) });
+      messages.push({
+        role: "tool",
+        tool_name: name ?? TOOL_NAME, // Ollama 的 chat template 靠它把结果对应回工具调用
+        content: JSON.stringify(result),
+      });
     }
   }
 

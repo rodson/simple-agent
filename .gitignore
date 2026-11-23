@@ -3,3 +3,5 @@ chroma-data/
 .env
 .DS_Store
 *.log
+
+docs

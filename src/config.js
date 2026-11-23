@@ -52,15 +52,16 @@ const raw = {
   chromaPort: positiveInt("CHROMA_PORT", 8000),
   collection: env.COLLECTION || "personal_kb",
   topK: positiveInt("TOP_K", 4),
-  chunkSize: positiveInt("CHUNK_SIZE", 300),
+  chunkSize: positiveInt("CHUNK_SIZE", 512),
   chunkOverlap: positiveInt("CHUNK_OVERLAP", 60),
   docsDir: env.DOCS_DIR || "docs",
   maxToolRounds: positiveInt("MAX_TOOL_ROUNDS", 3),
   historyTurns: positiveInt("HISTORY_TURNS", 5),
 };
 
-if (raw.chunkOverlap >= raw.chunkSize) {
-  throw new Error("CHUNK_OVERLAP 必须小于 CHUNK_SIZE");
+// 换行优先断句可能把窗口提前到 60%，overlap 过大时会退化出大量极小片段
+if (raw.chunkOverlap * 2 > raw.chunkSize) {
+  throw new Error("CHUNK_OVERLAP 不应超过 CHUNK_SIZE 的一半");
 }
 
 export const config = Object.freeze(raw);
