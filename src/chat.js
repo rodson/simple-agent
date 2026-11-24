@@ -21,11 +21,22 @@ const HELP = `
 直接输入自然语言即可提问，例如：我的项目代号是什么？
 `;
 
+const WEB_HELP = config.webSearch
+  ? `联网搜索：已开启（Tavily）
+  本地资料不足或问题涉及时效性信息时，助手会联网检索，每个问题最多 1 次。
+  ⚠️ 联网时你输入的问题原文会发送给 Tavily；文档、知识库片段与对话历史不会外发。
+  关闭方法：把 .env 中的 WEB_SEARCH 改为 false 后重启。
+`
+  : `联网搜索：未开启（所有数据只在本机处理）
+  开启方法：在 .env 中设置 WEB_SEARCH=true 和 TAVILY_API_KEY 后重启。
+`;
+
 async function main() {
   const healthy = await checkAll({ verbose: false });
   if (!healthy) console.log("⚠️  依赖未完全就绪，可运行 npm run doctor 查看细节。\n");
 
   console.log("本地知识库 Agent（Ollama + Chroma + RAG）");
+  console.log(config.webSearch ? "🌐 联网搜索已开启：必要时会把问题原文发送给 Tavily。" : "联网搜索未开启。");
   console.log("输入问题开始提问，/help 查看命令，/exit 退出。\n");
 
   const rl = createInterface({
@@ -58,7 +69,7 @@ async function main() {
       } else if (input === "/exit" || input === "/quit") {
         break;
       } else if (input === "/help") {
-        console.log(HELP);
+        console.log(HELP + WEB_HELP);
       } else if (input === "/clear") {
         history = [];
         lastSources = [];

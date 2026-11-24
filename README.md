@@ -7,6 +7,7 @@
 - **Chroma**：本地向量库，数据存在 `./chroma-data/`
 - **Node.js**：只用内置 `fetch` / `readline` / `crypto`，唯一第三方依赖是 `chromadb`
 - **不需要 Docker、不需要 Python、不需要云服务、不需要 API Key**
+- **可选联网搜索**：默认关闭；开启后由 [Tavily](https://tavily.com) 补充时效性信息，来源标注网址（需要 API Key，详见[联网搜索](#联网搜索可选)）
 
 ```
 docs/*.md|txt ──切块──> Ollama /api/embed ──> Chroma 持久化
@@ -66,7 +67,7 @@ npm run doctor
 | `npm start` | 进入交互式对话 |
 | `npm run ask -- "问题"` | 单次提问并退出 |
 
-对话中的斜杠命令：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/thinking`（显示/隐藏思考过程）、`/clear`、`/help`、`/exit`。
+对话中的斜杠命令（`/help` 会同时显示联网搜索是否开启）：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/thinking`（显示/隐藏思考过程）、`/clear`、`/help`、`/exit`。
 
 ## 配置
 
@@ -84,9 +85,37 @@ npm run doctor
 | `MAX_TOOL_ROUNDS` | `5` | Agent 最多追加检索几轮 |
 | `HISTORY_TURNS` | `7` | 保留的对话轮数 |
 | `SHOW_THINKING` | `true` | 交互式对话是否展示思考过程（`/thinking` 可临时切换）；`npm run ask` 默认不展示 |
+| `WEB_SEARCH` | `false` | 是否开启联网搜索，详见下一节 |
+| `TAVILY_API_KEY` | 空 | Tavily 密钥，开启 `WEB_SEARCH` 时必填 |
 | `DOCS_DIR` | `docs` | 文档目录 |
 
 > 修改端口时不必改 `package.json`：启动服务用 `CHROMA_PORT=8123 npm run chroma`，同时在 `.env` 里写 `CHROMA_PORT=8123` 让 Node 端连到同一端口（`.env` 不会自动注入到 `chroma` 这个 shell 脚本）。
+
+## 联网搜索（可选）
+
+默认关闭，关闭时不会发生任何对外请求，行为与纯本地版本完全一致。开启方法：
+
+1. 在 [app.tavily.com](https://app.tavily.com) 免费注册并获取 API Key（`tvly-` 开头，免费额度足够个人使用）。
+2. 在 `.env` 中写入：
+
+   ```bash
+   WEB_SEARCH=true
+   TAVILY_API_KEY=tvly-xxxxxxxx
+   ```
+
+3. 重启 `npm start` 或直接 `npm run ask -- "Node.js 当前最新的 LTS 版本是什么？"`。
+
+工作方式与边界：
+
+- **何时联网**：本地知识库仍是每次必查的第一步。模型认为本地资料不足或问题涉及时效性信息时会调用 `search_web` 工具；本地知识库为空时 Agent 会直接兜底检索一次。
+- **外发什么**：只发送你当前输入的**问题原文**（Agent 忽略模型给出的任何关键词，防止知识库片段或对话历史被拼进外发请求）。文档、知识库片段、配置与对话历史都不会外发。如果问题本身含隐私信息，请不要在开启联网时提问。
+- **限制**：每个问题最多联网 1 次、最多取 5 条结果、等待上限 10 秒。
+- **失败降级**：断网、超时、密钥无效、限流或零结果时会提示「联网检索未成功」，然后继续按本地知识库作答；`npm run ask` 下提示写到 stderr，stdout 仍只有「回答 + 参考来源」。
+- **来源区分**：本次回答用到网络结果时，「参考来源」会加 `[本地]` / `[网络]` 标签，网络条目附标题与网址；没用到时输出格式与原来逐字一致。`/sources` 同样能看到网络来源。
+- **不入库**：网络结果只在当次回答中使用，不写入 Chroma、不落盘，不影响 `ingest` / `reset`。
+- **不可信资料**：网页摘要中的指令性文字只被当作普通资料，模型被要求不得照做；本地资料与网络结果冲突时以本地为准。
+
+> 为什么用 Tavily 而不是免密钥的网页抓取：实测 DuckDuckGo、百度会拦截脚本请求，Bing 会对脚本请求返回与查询无关的随机结果，都不可靠。
 
 ## 目录结构
 
@@ -101,6 +130,7 @@ npm run doctor
     ├── ollama.js       # /api/embed、/api/chat(流式 NDJSON)、/api/tags
     ├── store.js        # Chroma 集合、写入、向量检索、清理
     ├── ingest.js       # 扫描文档、切块、幂等导入
+    ├── websearch.js    # 可选联网搜索（Tavily），唯一发起外部请求的模块
     ├── agent.js        # 系统提示词 + 工具调用循环 + RAG 兜底
     ├── output.js       # 流式增量输出：思考过程缩进、回答前缀、来源收尾
     ├── chat.js         # 交互式 REPL
@@ -142,4 +172,4 @@ A：目前只支持 `.md` / `.markdown` / `.txt`，保持依赖最小。要加 P
 
 ## 可扩展方向（本仓库刻意未实现）
 
-Web UI · 重排序 / 混合检索 · PDF 解析 · 多用户与鉴权 · Docker Compose。
+Web UI · 重排序 / 混合检索 · PDF 解析 · 多用户与鉴权 · Docker Compose · 网页正文抓取 / 搜索结果缓存。

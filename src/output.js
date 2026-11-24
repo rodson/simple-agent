@@ -15,6 +15,7 @@ export function createPrinter({
   let thinkingStarted = false;
   let answerStarted = false;
   let lastThinkingRound = -1;
+  let afterNotice = false; // 刚打印完提示，光标已在新行开头
 
   const onDelta = ({ type, text, round }) => {
     if (!text) return;
@@ -24,13 +25,20 @@ export function createPrinter({
         thinkingOut.write("\n思考过程：\n  ");
         thinkingStarted = true;
       } else if (round !== lastThinkingRound) {
-        thinkingOut.write("\n\n  "); // 新一轮工具调用后的思考，空行分隔
+        thinkingOut.write(afterNotice ? "  " : "\n\n  "); // 新一轮工具调用后的思考，空行分隔
       }
       lastThinkingRound = round;
+      afterNotice = false;
       thinkingOut.write(text.replace(/\n/g, "\n  "));
+    } else if (type === "notice") {
+      // 联网状态提示与思考过程同路输出：ask 模式下走 stderr，不污染 stdout 的「回答 + 参考来源」
+      const newline = (thinkingStarted || answerStarted) && !afterNotice;
+      thinkingOut.write(`${newline ? "\n" : ""}🌐 ${text}\n`);
+      afterNotice = true;
     } else if (type === "content") {
       if (!answerStarted) {
-        if (thinkingStarted) thinkingOut.write("\n");
+        if (thinkingStarted && !afterNotice) thinkingOut.write("\n");
+        afterNotice = false;
         answerOut.write(answerPrefix);
         answerStarted = true;
       }
@@ -42,7 +50,7 @@ export function createPrinter({
   const finish = ({ answer, sources }) => {
     const tail = formatSources(sources);
     if (!answerStarted) {
-      if (thinkingStarted) thinkingOut.write("\n");
+      if (thinkingStarted && !afterNotice) thinkingOut.write("\n");
       answerOut.write(`${answerPrefix}${answer}${tail}\n`);
     } else {
       answerOut.write(`${tail}\n`);

@@ -67,7 +67,15 @@ const raw = {
   maxToolRounds: positiveInt("MAX_TOOL_ROUNDS", 5),
   historyTurns: positiveInt("HISTORY_TURNS", 7),
   showThinking: booleanFlag("SHOW_THINKING", true),
+  webSearch: booleanFlag("WEB_SEARCH", false),
+  tavilyApiKey: (env.TAVILY_API_KEY || "").trim(),
 };
+
+if (raw.webSearch && !raw.tavilyApiKey) {
+  throw new Error(
+    "已开启 WEB_SEARCH，但没有配置 TAVILY_API_KEY。请在 .env 中填写密钥（https://app.tavily.com 获取），或关闭 WEB_SEARCH",
+  );
+}
 
 // 换行优先断句可能把窗口提前到 60%，overlap 过大时会退化出大量极小片段
 if (raw.chunkOverlap * 2 > raw.chunkSize) {
