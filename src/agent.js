@@ -45,6 +45,20 @@ export function formatSources(sources) {
   return `\n参考来源：\n${lines.join("\n")}`;
 }
 
+/** 把 Agent 各轮收集到的 thinking 拼成可直接打印的文本块；没有内容时返回空串。 */
+export function formatThinking(thinking) {
+  const parts = (thinking ?? [])
+    .filter((text) => typeof text === "string" && text.trim())
+    .map((text) => text.trim());
+  if (parts.length === 0) return "";
+  const body = parts
+    .join("\n\n")
+    .split("\n")
+    .map((line) => (line ? `  ${line}` : "")) // 分隔空行不加缩进
+    .join("\n");
+  return `\n思考过程：\n${body}`;
+}
+
 function parseArguments(raw) {
   if (raw && typeof raw === "object") return raw;
   if (typeof raw === "string") {
@@ -62,9 +76,17 @@ function parseArguments(raw) {
  * 1. Agent 先自己执行一次 search_knowledge_base（不依赖小模型是否主动吐 tool call，保证 RAG 一定生效）。
  * 2. 把工具结果按 Ollama 的 tool 消息格式交给模型；模型可以直接回答，也可以换关键词再调用工具。
  * 3. 最多追加 MAX_TOOL_ROUNDS 轮，之后强制收尾。
+ *
+ * 每一轮模型响应里的 message.thinking 都会被收集，随回答一并返回供 CLI 展示。
  */
 export async function answerOnce(question, history = []) {
   const sources = [];
+  const thinking = [];
+  const collectThinking = (message) => {
+    if (typeof message?.thinking === "string" && message.thinking.trim()) {
+      thinking.push(message.thinking.trim());
+    }
+  };
   const collect = (items) => {
     for (const item of items) {
       if (!sources.some((s) => s.source === item.source && s.chunk === item.chunk)) {
@@ -92,6 +114,7 @@ export async function answerOnce(question, history = []) {
     return {
       answer: "知识库中没有相关信息。请先把 .md / .txt 文档放进 docs/，然后执行 npm run ingest。",
       sources: [],
+      thinking: [],
     };
   }
 
@@ -109,10 +132,11 @@ export async function answerOnce(question, history = []) {
 
   for (let round = 0; round < config.maxToolRounds; round++) {
     const message = await chat({ messages, tools: TOOLS });
+    collectThinking(message);
     const toolCalls = message.tool_calls ?? [];
 
     if (toolCalls.length === 0) {
-      return { answer: message.content?.trim() || "（模型没有返回内容）", sources };
+      return { answer: message.content?.trim() || "（模型没有返回内容）", sources, thinking };
     }
 
     messages.push({
@@ -145,5 +169,6 @@ export async function answerOnce(question, history = []) {
       { role: "user", content: "请直接基于以上资料给出最终答案，不要再调用工具。" },
     ],
   });
-  return { answer: final.content?.trim() || "（模型没有返回内容）", sources };
+  collectThinking(final);
+  return { answer: final.content?.trim() || "（模型没有返回内容）", sources, thinking };
 }

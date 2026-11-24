@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { config } from "./config.js";
-import { answerOnce, formatSources } from "./agent.js";
+import { answerOnce, formatSources, formatThinking } from "./agent.js";
 import { ingestDocs } from "./ingest.js";
 import { resetCollection } from "./store.js";
 import { checkAll } from "./doctor.js";
@@ -10,6 +10,7 @@ const HELP = `
   /ingest   重新导入 docs/ 里的文档（幂等，改过的文件会更新）
   /reset    清空并重建知识库（需要二次确认）
   /sources  显示上一次回答用到的片段
+  /thinking 显示/隐藏模型的思考过程
   /clear    清空对话历史
   /help     显示本帮助
   /exit     退出
@@ -35,6 +36,7 @@ async function main() {
   let history = [];
   let lastSources = [];
   let pendingReset = false;
+  let showThinking = config.showThinking;
 
   rl.prompt();
   for await (const line of rl) {
@@ -62,6 +64,9 @@ async function main() {
         console.log(
           lastSources.length ? `${formatSources(lastSources).trimStart()}\n` : "还没有参考来源。\n",
         );
+      } else if (input === "/thinking") {
+        showThinking = !showThinking;
+        console.log(`${showThinking ? "已开启" : "已关闭"}思考过程展示。\n`);
       } else if (input === "/ingest") {
         await ingestDocs();
       } else if (input === "/reset") {
@@ -69,7 +74,11 @@ async function main() {
         pendingReset = true;
       } else {
         console.log("思考中…");
-        const { answer, sources } = await answerOnce(input, history);
+        const { answer, sources, thinking } = await answerOnce(input, history);
+        if (showThinking) {
+          const block = formatThinking(thinking);
+          if (block) console.log(block);
+        }
         console.log(`\n助手 > ${answer}${formatSources(sources)}\n`);
         history.push(
           { role: "user", content: input },

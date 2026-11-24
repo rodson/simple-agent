@@ -44,6 +44,15 @@ function positiveInt(key, fallback) {
   return value;
 }
 
+function booleanFlag(key, fallback) {
+  const raw = env[key];
+  if (raw === undefined || raw === "") return fallback;
+  const value = raw.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  throw new Error(`配置项 ${key} 必须是 true/false，当前值：${raw}`);
+}
+
 const raw = {
   ollamaHost: (env.OLLAMA_HOST || "http://127.0.0.1:11434").replace(/\/+$/, ""),
   chatModel: env.CHAT_MODEL || "qwen3.5:9b",
@@ -57,6 +66,7 @@ const raw = {
   docsDir: env.DOCS_DIR || "docs",
   maxToolRounds: positiveInt("MAX_TOOL_ROUNDS", 5),
   historyTurns: positiveInt("HISTORY_TURNS", 7),
+  showThinking: booleanFlag("SHOW_THINKING", true),
 };
 
 // 换行优先断句可能把窗口提前到 60%，overlap 过大时会退化出大量极小片段

@@ -45,6 +45,8 @@ npm start
 npm run ask -- "我的项目代号是什么？"
 ```
 
+`npm run ask` 的 stdout 只有「回答 + 参考来源」，默认不输出思考过程；需要时用 `SHOW_THINKING=true npm run ask -- "问题"`，思考过程会打印到 stderr。
+
 启动前体检：
 
 ```bash
@@ -63,7 +65,7 @@ npm run doctor
 | `npm start` | 进入交互式对话 |
 | `npm run ask -- "问题"` | 单次提问并退出 |
 
-对话中的斜杠命令：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/clear`、`/help`、`/exit`。
+对话中的斜杠命令：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/thinking`（显示/隐藏思考过程）、`/clear`、`/help`、`/exit`。
 
 ## 配置
 
@@ -80,6 +82,7 @@ npm run doctor
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `512` / `60` | 切块字符数与重叠字符数 |
 | `MAX_TOOL_ROUNDS` | `5` | Agent 最多追加检索几轮 |
 | `HISTORY_TURNS` | `7` | 保留的对话轮数 |
+| `SHOW_THINKING` | `true` | 交互式对话是否展示思考过程（`/thinking` 可临时切换）；`npm run ask` 默认不展示 |
 | `DOCS_DIR` | `docs` | 文档目录 |
 
 > 修改端口时不必改 `package.json`：启动服务用 `CHROMA_PORT=8123 npm run chroma`，同时在 `.env` 里写 `CHROMA_PORT=8123` 让 Node 端连到同一端口（`.env` 不会自动注入到 `chroma` 这个 shell 脚本）。
@@ -107,7 +110,7 @@ npm run doctor
 
 - **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
 - **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。即使模型支持 tool calling，也不能保证每次都会主动发起调用，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；`qwen3.5:9b` 这类更擅长工具调用的模型会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
-- **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，本项目只读取 `message.content`，因此思考过程不会混进回答；默认保留 thinking，如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
+- **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，`answerOnce()` 会汇总 Agent 各轮（含工具调用轮与最终收尾轮）的 thinking，由 `formatThinking()` 在回答前以「思考过程」块打印；它不会混进 `content`，也不会写入对话历史。交互式对话默认展示，可用 `SHOW_THINKING=false` 或会话内 `/thinking` 关闭；`npm run ask` 为保持 stdout 干净默认不展示，显式设 `SHOW_THINKING=true` 时思考过程输出到 stderr。换用不返回 `message.thinking` 的模型时不会出现该块（本项目不解析 content 里的 `<think>` 标签）；如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
 - **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
 - **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
 
