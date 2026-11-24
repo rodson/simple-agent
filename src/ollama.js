@@ -9,7 +9,7 @@ function ollamaDown(err) {
   );
 }
 
-async function post(path, body) {
+async function request(path, body) {
   let response;
   try {
     response = await fetch(`${config.ollamaHost}${path}`, {
@@ -36,7 +36,11 @@ async function post(path, body) {
     }
     throw new Error(`Ollama ${path} 返回 HTTP ${response.status}：${detail}`);
   }
-  return response.json();
+  return response;
+}
+
+async function post(path, body) {
+  return (await request(path, body)).json();
 }
 
 /** 把一批文本转成向量；返回数组顺序与输入一致。 */
@@ -61,20 +65,79 @@ export async function embed(texts) {
   return vectors;
 }
 
-/** 非流式对话；传 tools 时模型可能返回 tool_calls。 */
-export async function chat({ messages, tools }) {
+/**
+ * 流式对话：/api/chat 以 NDJSON 逐帧返回，message.thinking / message.content 都是增量片段。
+ * onDelta(type, text) 实时收到增量（type 为 "thinking" 或 "content"）；
+ * 返回累积后的完整 message（role/content/thinking/tool_calls），结构与原来的非流式一致。
+ * tool_calls 由模型在流末尾一次性给出，不会分片。
+ */
+export async function chatStream({ messages, tools, onDelta }) {
   const body = {
     model: config.chatModel,
     messages,
-    stream: false,
+    stream: true,
     keep_alive: "10m",
     // Ollama 默认上下文较小，中文 RAG 资料容易被静默截断
     options: { temperature: 0.1, num_ctx: 16384 },
   };
   if (tools?.length) body.tools = tools;
-  const data = await post("/api/chat", body);
-  if (!data.message) throw new Error("Ollama /api/chat 的响应里没有 message 字段");
-  return data.message;
+
+  const response = await request("/api/chat", body);
+  if (!response.body) throw new Error("Ollama /api/chat 的流式响应里没有 body");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let thinking = "";
+  let toolCalls = [];
+  let finished = false;
+
+  const handleLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    let chunk;
+    try {
+      chunk = JSON.parse(trimmed);
+    } catch {
+      return; // 忽略不完整或空行
+    }
+    if (chunk.error) throw new Error(`Ollama /api/chat 流式返回错误：${chunk.error}`);
+    const message = chunk.message;
+    if (message) {
+      if (typeof message.thinking === "string" && message.thinking) {
+        thinking += message.thinking;
+        onDelta?.("thinking", message.thinking);
+      }
+      if (typeof message.content === "string" && message.content) {
+        content += message.content;
+        onDelta?.("content", message.content);
+      }
+      if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+        toolCalls = toolCalls.concat(message.tool_calls);
+      }
+    }
+    if (chunk.done === true) finished = true;
+  };
+
+  while (!finished) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      handleLine(line);
+      if (finished) break;
+    }
+  }
+  if (!finished && buffer.trim()) handleLine(buffer); // 最后一行可能没有换行符
+  await reader.cancel().catch(() => {});
+
+  const message = { role: "assistant", content, thinking };
+  if (toolCalls.length) message.tool_calls = toolCalls;
+  return message;
 }
 
 /** 本机已下载的模型名列表。 */

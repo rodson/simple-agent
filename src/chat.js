@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { config } from "./config.js";
-import { answerOnce, formatSources, formatThinking } from "./agent.js";
+import { answerOnce, formatSources } from "./agent.js";
+import { createPrinter } from "./output.js";
 import { ingestDocs } from "./ingest.js";
 import { resetCollection } from "./store.js";
 import { checkAll } from "./doctor.js";
@@ -80,13 +81,10 @@ async function main() {
         // "你 > "，看起来像又能提问了，而且输入会被缓冲成下一轮问题。
         rl.pause();
         rl.setPrompt("");
+        const printer = createPrinter({ showThinking, answerPrefix: "\n助手 > " });
         try {
-          const { answer, sources, thinking } = await answerOnce(input, history);
-          if (showThinking) {
-            const block = formatThinking(thinking);
-            if (block) console.log(block);
-          }
-          console.log(`\n助手 > ${answer}${formatSources(sources)}\n`);
+          const { answer, sources } = await answerOnce(input, history, printer.onDelta);
+          printer.finish({ answer, sources });
           history.push(
             { role: "user", content: input },
             { role: "assistant", content: answer },

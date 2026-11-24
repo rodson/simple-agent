@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import { chat } from "./ollama.js";
+import { chatStream } from "./ollama.js";
 import { search } from "./store.js";
 
 const TOOL_NAME = "search_knowledge_base";
@@ -45,20 +45,6 @@ export function formatSources(sources) {
   return `\n参考来源：\n${lines.join("\n")}`;
 }
 
-/** 把 Agent 各轮收集到的 thinking 拼成可直接打印的文本块；没有内容时返回空串。 */
-export function formatThinking(thinking) {
-  const parts = (thinking ?? [])
-    .filter((text) => typeof text === "string" && text.trim())
-    .map((text) => text.trim());
-  if (parts.length === 0) return "";
-  const body = parts
-    .join("\n\n")
-    .split("\n")
-    .map((line) => (line ? `  ${line}` : "")) // 分隔空行不加缩进
-    .join("\n");
-  return `\n思考过程：\n${body}`;
-}
-
 function parseArguments(raw) {
   if (raw && typeof raw === "object") return raw;
   if (typeof raw === "string") {
@@ -77,9 +63,10 @@ function parseArguments(raw) {
  * 2. 把工具结果按 Ollama 的 tool 消息格式交给模型；模型可以直接回答，也可以换关键词再调用工具。
  * 3. 最多追加 MAX_TOOL_ROUNDS 轮，之后强制收尾。
  *
- * 每一轮模型响应里的 message.thinking 都会被收集，随回答一并返回供 CLI 展示。
+ * 每轮都走流式生成，增量通过 onDelta({ type, text, round }) 实时转发给展示层；
+ * 返回结构仍是完整的 { answer, sources, thinking }，供调用方收尾与写入历史。
  */
-export async function answerOnce(question, history = []) {
+export async function answerOnce(question, history = [], onDelta) {
   const sources = [];
   const thinking = [];
   const collectThinking = (message) => {
@@ -131,7 +118,11 @@ export async function answerOnce(question, history = []) {
   ];
 
   for (let round = 0; round < config.maxToolRounds; round++) {
-    const message = await chat({ messages, tools: TOOLS });
+    const message = await chatStream({
+      messages,
+      tools: TOOLS,
+      onDelta: (type, text) => onDelta?.({ type, text, round }),
+    });
     collectThinking(message);
     const toolCalls = message.tool_calls ?? [];
 
@@ -163,11 +154,13 @@ export async function answerOnce(question, history = []) {
   }
 
   // 工具轮数用尽：最后再请求一次，明确禁止继续调用工具
-  const final = await chat({
+  const finalRound = config.maxToolRounds;
+  const final = await chatStream({
     messages: [
       ...messages,
       { role: "user", content: "请直接基于以上资料给出最终答案，不要再调用工具。" },
     ],
+    onDelta: (type, text) => onDelta?.({ type, text, round: finalRound }),
   });
   collectThinking(final);
   return { answer: final.content?.trim() || "（模型没有返回内容）", sources, thinking };

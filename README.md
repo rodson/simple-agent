@@ -3,6 +3,7 @@
 一个**可以完全跑在自己电脑上**的最小知识库问答 Agent：把 `.md` / `.txt` 放进 `docs/`，导入后就能用中文提问，回答会附上来源片段。
 
 - **Ollama**：本地大模型 + 本地 embedding，数据不出本机
+- **流式输出**：`/api/chat` 的 NDJSON 增量逐字显示，思考过程与回答边生成边出现
 - **Chroma**：本地向量库，数据存在 `./chroma-data/`
 - **Node.js**：只用内置 `fetch` / `readline` / `crypto`，唯一第三方依赖是 `chromadb`
 - **不需要 Docker、不需要 Python、不需要云服务、不需要 API Key**
@@ -45,7 +46,7 @@ npm start
 npm run ask -- "我的项目代号是什么？"
 ```
 
-`npm run ask` 的 stdout 只有「回答 + 参考来源」，默认不输出思考过程；需要时用 `SHOW_THINKING=true npm run ask -- "问题"`，思考过程会打印到 stderr。
+`npm run ask` 的 stdout 只有「回答 + 参考来源」（流式逐字写出，重定向到文件仍是完整答案），默认不输出思考过程；需要时用 `SHOW_THINKING=true npm run ask -- "问题"`，思考过程会打印到 stderr。
 
 启动前体检：
 
@@ -97,10 +98,11 @@ npm run doctor
 ├── chroma-data/        # Chroma 持久化数据（自动生成，已 gitignore）
 └── src/
     ├── config.js       # 环境变量与默认值
-    ├── ollama.js       # /api/embed、/api/chat、/api/tags
+    ├── ollama.js       # /api/embed、/api/chat(流式 NDJSON)、/api/tags
     ├── store.js        # Chroma 集合、写入、向量检索、清理
     ├── ingest.js       # 扫描文档、切块、幂等导入
     ├── agent.js        # 系统提示词 + 工具调用循环 + RAG 兜底
+    ├── output.js       # 流式增量输出：思考过程缩进、回答前缀、来源收尾
     ├── chat.js         # 交互式 REPL
     ├── ask.js          # 单次提问
     └── doctor.js       # 依赖体检
@@ -110,7 +112,8 @@ npm run doctor
 
 - **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
 - **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。即使模型支持 tool calling，也不能保证每次都会主动发起调用，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；`qwen3.5:9b` 这类更擅长工具调用的模型会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
-- **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，`answerOnce()` 会汇总 Agent 各轮（含工具调用轮与最终收尾轮）的 thinking，由 `formatThinking()` 在回答前以「思考过程」块打印；它不会混进 `content`，也不会写入对话历史。交互式对话默认展示，可用 `SHOW_THINKING=false` 或会话内 `/thinking` 关闭；`npm run ask` 为保持 stdout 干净默认不展示，显式设 `SHOW_THINKING=true` 时思考过程输出到 stderr。换用不返回 `message.thinking` 的模型时不会出现该块（本项目不解析 content 里的 `<think>` 标签）；如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
+- **流式输出怎么工作**：`src/ollama.js` 的 `chatStream()` 把 `/api/chat` 的 `stream: true` 响应当作 NDJSON 逐帧解析，`message.thinking` / `message.content` 都是增量片段，`tool_calls` 在流末尾一次性给出（实测工具调用轮的 `content` 为空）。它边解析边用 `onDelta()` 把增量推给 `src/output.js` 的 printer，同时累积出完整 message 供 Agent 判断是否需要继续调用工具；`answerOnce()` 仍返回完整的 `{ answer, sources, thinking }`，CLI 只在流结束后补印「参考来源」。`npm run ask` 用同一个 printer，但思考过程写到 stderr、stdout 保持只有答案。
+- **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，`answerOnce()` 汇总 Agent 各轮（含工具调用轮与最终收尾轮）的 thinking，printer 在回答前以「思考过程」块逐字输出，多轮之间空一行；它不会混进 `content`，也不会写入对话历史。交互式对话默认展示，可用 `SHOW_THINKING=false` 或会话内 `/thinking` 关闭；`npm run ask` 为保持 stdout 干净默认不展示，显式设 `SHOW_THINKING=true` 时思考过程输出到 stderr。换用不返回 `message.thinking` 的模型时不会出现该块（本项目不解析 content 里的 `<think>` 标签）；如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
 - **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
 - **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
 
@@ -139,4 +142,4 @@ A：目前只支持 `.md` / `.markdown` / `.txt`，保持依赖最小。要加 P
 
 ## 可扩展方向（本仓库刻意未实现）
 
-Web UI · 流式输出 · 重排序 / 混合检索 · PDF 解析 · 多用户与鉴权 · Docker Compose。
+Web UI · 重排序 / 混合检索 · PDF 解析 · 多用户与鉴权 · Docker Compose。
