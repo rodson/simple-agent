@@ -5,6 +5,8 @@ import { ingestDocs } from "./ingest.js";
 import { resetCollection } from "./store.js";
 import { checkAll } from "./doctor.js";
 
+const PROMPT = "你 > ";
+
 const HELP = `
 可用命令：
   /ingest   重新导入 docs/ 里的文档（幂等，改过的文件会更新）
@@ -30,7 +32,7 @@ async function main() {
     output: process.stdout,
     terminal: Boolean(process.stdin.isTTY), // 管道输入时不输出终端控制字符
   });
-  rl.setPrompt("你 > ");
+  rl.setPrompt(PROMPT);
   rl.on("SIGINT", () => rl.close());
 
   let history = [];
@@ -73,19 +75,28 @@ async function main() {
         console.log("⚠️  这会清空向量库。确认请输入 y，取消直接回车。");
         pendingReset = true;
       } else {
-        console.log("思考中…");
-        const { answer, sources, thinking } = await answerOnce(input, history);
-        if (showThinking) {
-          const block = formatThinking(thinking);
-          if (block) console.log(block);
+        console.log("思考中…（模型生成中，请稍候）");
+        // 等待期间若 readline 仍在读输入，任何按键都会触发 kRefreshLine() 重绘出
+        // "你 > "，看起来像又能提问了，而且输入会被缓冲成下一轮问题。
+        rl.pause();
+        rl.setPrompt("");
+        try {
+          const { answer, sources, thinking } = await answerOnce(input, history);
+          if (showThinking) {
+            const block = formatThinking(thinking);
+            if (block) console.log(block);
+          }
+          console.log(`\n助手 > ${answer}${formatSources(sources)}\n`);
+          history.push(
+            { role: "user", content: input },
+            { role: "assistant", content: answer },
+          );
+          history = history.slice(-config.historyTurns * 2);
+          lastSources = sources;
+        } finally {
+          rl.setPrompt(PROMPT);
+          rl.resume();
         }
-        console.log(`\n助手 > ${answer}${formatSources(sources)}\n`);
-        history.push(
-          { role: "user", content: input },
-          { role: "assistant", content: answer },
-        );
-        history = history.slice(-config.historyTurns * 2);
-        lastSources = sources;
       }
     } catch (err) {
       console.error(`❌ ${err.message}\n`);
