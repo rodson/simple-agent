@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { ChromaClient } from "chromadb";
 import { config } from "./config.js";
 import { embed } from "./ollama.js";
@@ -93,11 +92,12 @@ export async function resetCollection() {
   return openCollection();
 }
 
+/** 片段 ID 直接用「相对路径#序号」，可读、稳定，重复导入同一片段会覆盖而不是新增。 */
 export function chunkId(source, index) {
-  return createHash("sha1").update(`${source}|${index}`).digest("hex");
+  return `${source}#${index}`;
 }
 
-/** 批量写入片段；相同 (文件, 序号) 会覆盖，重复导入不会产生重复数据。 */
+/** 批量计算向量并写入；chunk 形如 { source, chunk, hash, text }，相同 ID 会覆盖。 */
 export async function upsertChunks(chunks) {
   if (chunks.length === 0) return 0;
   const collection = await openCollection();
@@ -108,7 +108,7 @@ export async function upsertChunks(chunks) {
       collection.upsert({
         ids: batch.map((chunk) => chunkId(chunk.source, chunk.chunk)),
         documents: batch.map((chunk) => chunk.text),
-        metadatas: batch.map((chunk) => ({ source: chunk.source, chunk: chunk.chunk })),
+        metadatas: batch.map(({ source, chunk, hash }) => ({ source, chunk, hash })),
         embeddings: vectors,
       }),
     );
@@ -145,15 +145,14 @@ export async function search(text, topK = config.topK) {
     .filter((item) => item.text.length > 0);
 }
 
-/** 列出集合内所有记录，用于清理已删除/改名的文档。 */
-export async function listSources() {
+/** 列出集合内所有记录的 ID、来源文件与内容哈希，用于增量导入和清理。 */
+export async function listRecords() {
   const collection = await openCollection();
-  const result = await run(() =>
-    collection.get({ limit: 100_000, include: ["metadatas"] }),
-  );
-  return (result.ids ?? []).map((id, i) => ({
+  const result = await run(() => collection.get({ limit: 100_000, include: ["metadatas"] }));
+  return result.ids.map((id, i) => ({
     id,
-    source: result.metadatas?.[i]?.source ?? null,
+    source: result.metadatas[i]?.source ?? null,
+    hash: result.metadatas[i]?.hash ?? null,
   }));
 }
 
@@ -161,11 +160,6 @@ export async function deleteByIds(ids) {
   if (ids.length === 0) return;
   const collection = await openCollection();
   await run(() => collection.delete({ ids }));
-}
-
-export async function deleteSource(source) {
-  const collection = await openCollection();
-  await run(() => collection.delete({ where: { source } }));
 }
 
 export async function count() {

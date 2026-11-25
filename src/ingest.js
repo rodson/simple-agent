@@ -1,16 +1,9 @@
-import { readdir, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
-import {
-  openCollection,
-  resetCollection,
-  upsertChunks,
-  deleteByIds,
-  deleteSource,
-  listSources,
-  count,
-} from "./store.js";
+import { openCollection, resetCollection, upsertChunks, deleteByIds, listRecords, chunkId, count } from "./store.js";
 
 const EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -33,11 +26,11 @@ export async function scanDocs(root = config.docsDir) {
       if (entry.isDirectory()) {
         await walk(full);
       } else if (entry.isFile() && EXTENSIONS.has(path.extname(entry.name).toLowerCase())) {
-        const text = await readFile(full, "utf8");
-        if (Buffer.byteLength(text, "utf8") > MAX_FILE_BYTES) {
+        if ((await stat(full)).size > MAX_FILE_BYTES) {
           console.warn(`  跳过超大文件（>2MB）：${full}`);
           continue;
         }
+        const text = await readFile(full, "utf8");
         files.push({ source: path.relative(config.docsDir, full).split(path.sep).join("/"), text });
       }
     }
@@ -73,7 +66,17 @@ export function chunkFile(source, text) {
   return splitText(text).map((piece, index) => ({ source, chunk: index, text: piece }));
 }
 
-/** 幂等导入：同名文件先删旧块再写新块，磁盘上已删除的文件也一并清理。 */
+/** 文件内容 + 切块参数的哈希：任何一项变了，这个文件都需要重新导入。 */
+function fileHash(text) {
+  return createHash("sha1").update(`${config.chunkSize}|${config.chunkOverlap}|${text}`).digest("hex");
+}
+
+/**
+ * 增量导入：
+ * - 内容没变的文件直接跳过，不重复计算向量
+ * - 变了的文件先写入新片段，全部成功后再删除多余的旧片段，中途失败也不会把知识库删空
+ * - 磁盘上已删除的文件，其片段也一并清理
+ */
 export async function ingestDocs({ reset = false } = {}) {
   const files = await scanDocs();
   if (files.length === 0) {
@@ -84,27 +87,32 @@ export async function ingestDocs({ reset = false } = {}) {
   if (reset) await resetCollection();
   else await openCollection(); // 触发向量模型一致性校验
 
-  const sources = new Set(files.map((file) => file.source));
-  const existing = await listSources();
-  await deleteByIds(
-    existing.filter((row) => !row.source || !sources.has(row.source)).map((row) => row.id),
-  );
+  const records = await listRecords();
+  const oldBySource = Map.groupBy(records, (row) => row.source);
+  const keepIds = new Set(); // 导入结束后应该留在库里的片段
+  const changed = [];
 
-  const byFile = files.map((file) => ({
-    source: file.source,
-    chunks: chunkFile(file.source, file.text),
-  }));
-  for (const file of byFile) {
-    await deleteSource(file.source); // 文件变短时清掉多余的旧块
+  for (const file of files) {
+    const hash = fileHash(file.text);
+    const chunks = chunkFile(file.source, file.text).map((chunk) => ({ ...chunk, hash }));
+    for (const chunk of chunks) keepIds.add(chunkId(chunk.source, chunk.chunk));
+
+    const old = oldBySource.get(file.source) ?? [];
+    const unchanged = old.length === chunks.length && old.every((row) => row.hash === hash);
+    if (!unchanged) changed.push({ source: file.source, chunks });
   }
-  const allChunks = byFile.flatMap((file) => file.chunks);
-  await upsertChunks(allChunks);
 
-  for (const file of byFile) console.log(`  ${file.source} → ${file.chunks.length} 个片段`);
+  for (const file of changed) {
+    await upsertChunks(file.chunks);
+    console.log(`  ${file.source} → ${file.chunks.length} 个片段`);
+  }
+  await deleteByIds(records.filter((row) => !keepIds.has(row.id)).map((row) => row.id));
+
+  const skipped = files.length - changed.length;
   console.log(
-    `✅ 已导入 ${byFile.length} 个文件、${allChunks.length} 个片段（集合现有 ${await count()} 条）`,
+    `✅ 更新 ${changed.length} 个文件，${skipped} 个未变化已跳过（集合现有 ${await count()} 个片段）`,
   );
-  return { files: byFile.length, chunks: allChunks.length };
+  return { files: changed.length, skipped };
 }
 
 const isMain =

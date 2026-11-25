@@ -34,7 +34,7 @@ npm run models
 npm run chroma
 
 # 4. 把自己的 .md / .txt 放进 docs/（仓库自带两份示例文档）
-#    然后导入，可重复执行，改过的文件会自动更新
+#    然后导入，可重复执行：只处理新增或改过的文件，没变的直接跳过
 npm run ingest
 
 # 5. 开始对话
@@ -62,16 +62,17 @@ npm run doctor
 | `npm run chroma` | 启动本地 Chroma 服务（`127.0.0.1:8000`） |
 | `npm run models` | 拉取对话模型与向量模型 |
 | `npm run doctor` | 检查 Ollama / 模型 / Chroma / 集合状态 |
-| `npm run ingest` | 幂等导入 `docs/` 下的文档 |
+| `npm run ingest` | 增量导入 `docs/` 下的文档 |
 | `npm run reset` | 删除集合并重建（切换向量模型后必须使用） |
 | `npm start` | 进入交互式对话 |
 | `npm run ask -- "问题"` | 单次提问并退出 |
+| `npm test` | 运行单元测试（不需要 Ollama / Chroma） |
 
 对话中的斜杠命令（`/help` 会同时显示联网搜索是否开启）：`/ingest`、`/reset`（二次确认）、`/sources`（上次回答用到的片段）、`/thinking`（显示/隐藏思考过程）、`/clear`、`/help`、`/exit`。
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 后按需修改；`src/config.js` 内置了一个极简 `KEY=VALUE` 读取器，没有 `.env` 也能用默认值启动，系统环境变量优先级更高。
+复制 `.env.example` 为 `.env` 后按需修改；`src/config.js` 用 Node 内置的 `process.loadEnvFile()` 读取它，没有 `.env` 也能用默认值启动，系统环境变量优先级更高。
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -129,22 +130,35 @@ npm run doctor
     ├── config.js       # 环境变量与默认值
     ├── ollama.js       # /api/embed、/api/chat(流式 NDJSON)、/api/tags
     ├── store.js        # Chroma 集合、写入、向量检索、清理
-    ├── ingest.js       # 扫描文档、切块、幂等导入
+    ├── ingest.js       # 扫描文档、切块、增量导入
     ├── websearch.js    # 可选联网搜索（Tavily），唯一发起外部请求的模块
     ├── agent.js        # 系统提示词 + 工具调用循环 + RAG 兜底
     ├── output.js       # 流式增量输出：思考过程缩进、回答前缀、来源收尾
     ├── chat.js         # 交互式 REPL
     ├── ask.js          # 单次提问
     └── doctor.js       # 依赖体检
+└── test/               # 纯函数单元测试（node:test，零依赖）
 ```
+
+## 推荐阅读顺序
+
+想弄懂这个 Agent 是怎么工作的，按下面的顺序读源码即可，每个文件都不长：
+
+1. [src/config.js](src/config.js)：所有可配置项和默认值
+2. [src/ollama.js](src/ollama.js)：怎么调用本地模型，算向量、流式对话
+3. [src/store.js](src/store.js)：怎么把向量存进 Chroma、怎么做相似度检索
+4. [src/ingest.js](src/ingest.js)：文档怎么被切块并导入知识库
+5. [src/agent.js](src/agent.js)：**核心**，工具定义和 Agent 循环（检索 → 模型回答或继续调用工具 → 收尾）
+6. [src/output.js](src/output.js)、[src/chat.js](src/chat.js)、[src/ask.js](src/ask.js)：把流式结果展示到终端
+7. [test/basics.test.js](test/basics.test.js)：纯函数的用法示例
 
 ## 实现要点
 
 - **为什么显式传向量**：`chromadb@3.x` 的默认 embedding function 依赖额外 ONNX 包，且不再内置 Ollama 版本。本项目自己调 `/api/embed`，把 `embeddings` / `queryEmbeddings` 直接传给 Chroma，集合以 `embeddingFunction: null` 创建。
-- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。即使模型支持 tool calling，也不能保证每次都会主动发起调用，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；`qwen3.5:9b` 这类更擅长工具调用的模型会更频繁地触发后续工具调用。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
+- **Agent 循环怎么工作**：Agent 先确定性地执行一次 `search_knowledge_base`，把结果按 Ollama 的 `role:"tool"` 格式交给模型；模型可以直接回答，也可以换关键词再次调用工具，最多 `MAX_TOOL_ROUNDS` 轮。即使模型支持 tool calling，也不能保证每次都会主动发起调用，所以第一步由 Agent 自己执行 —— 既保证 RAG 一定生效，又保留模型自主追加检索的能力；`qwen3.5:9b` 这类更擅长工具调用的模型会更频繁地触发后续工具调用。工具集中定义在 `createTools()` 里，每个工具都由 `description` / `parameters`（交给模型）和 `run(args)`（由 Agent 执行）组成，新增工具只需往里加一项，循环本身不用改。工具结果消息带 `tool_name` 以兼容 Ollama 的 chat template；空库时直接短路返回，不调用模型。
 - **流式输出怎么工作**：`src/ollama.js` 的 `chatStream()` 把 `/api/chat` 的 `stream: true` 响应当作 NDJSON 逐帧解析，`message.thinking` / `message.content` 都是增量片段，`tool_calls` 在流末尾一次性给出（实测工具调用轮的 `content` 为空）。它边解析边用 `onDelta()` 把增量推给 `src/output.js` 的 printer，同时累积出完整 message 供 Agent 判断是否需要继续调用工具；`answerOnce()` 仍返回完整的 `{ answer, sources, thinking }`，CLI 只在流结束后补印「参考来源」。`npm run ask` 用同一个 printer，但思考过程写到 stderr、stdout 保持只有答案。
 - **qwen3.5 的 thinking**：Ollama 会把推理文本放在 `message.thinking`，`answerOnce()` 汇总 Agent 各轮（含工具调用轮与最终收尾轮）的 thinking，printer 在回答前以「思考过程」块逐字输出，多轮之间空一行；它不会混进 `content`，也不会写入对话历史。交互式对话默认展示，可用 `SHOW_THINKING=false` 或会话内 `/thinking` 关闭；`npm run ask` 为保持 stdout 干净默认不展示，显式设 `SHOW_THINKING=true` 时思考过程输出到 stderr。换用不返回 `message.thinking` 的模型时不会出现该块（本项目不解析 content 里的 `<think>` 标签）；如需降低延迟可在 `src/ollama.js` 的 `/api/chat` 请求体里加 `think: false`（实测工具调用仍正常）。
-- **幂等导入**：片段 ID = `sha1(相对路径|序号)`，导入时先删同名文件的旧片段再 upsert，磁盘上已删除的文件也会从库中清掉。
+- **增量导入**：片段 ID = `相对路径#序号`，每个片段的元数据里记着所属文件的内容哈希（含切块参数）。导入时哈希没变的文件直接跳过；变了的文件先写入新片段，全部成功后再删除多余的旧片段，中途失败也不会把知识库删空；磁盘上已删除的文件也会从库中清掉。
 - **引用兜底**：即使模型漏标 `[来源: xxx]`，CLI 也会独立打印「参考来源」列表。
 
 ## 常见问题

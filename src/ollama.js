@@ -1,142 +1,93 @@
+import { createInterface } from "node:readline";
+import { Readable } from "node:stream";
 import { config } from "./config.js";
 
-const TIMEOUT_MS = 300_000; // 本地模型首次加载可能较慢
+// 只限制「等到响应开始」的时间（含首次加载模型）；之后流式生成多久都不打断
+const TIMEOUT_MS = 300_000;
 
-function ollamaDown(err) {
-  return new Error(
-    `无法连接 Ollama（${config.ollamaHost}）：${err.message}\n` +
-      `请确认 Ollama 已安装并运行：ollama serve`,
-  );
-}
+const ollamaDown = (reason) =>
+  new Error(`无法连接 Ollama（${config.ollamaHost}）：${reason}\n请确认 Ollama 已安装并运行：ollama serve`);
 
 async function request(path, body) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   let response;
   try {
     response = await fetch(`${config.ollamaHost}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: controller.signal,
     });
   } catch (err) {
-    throw ollamaDown(err);
+    const reason = err.name === "AbortError" ? `超过 ${TIMEOUT_MS / 1000} 秒未响应` : err.message;
+    throw ollamaDown(reason);
+  } finally {
+    clearTimeout(timer);
   }
 
+  if (response.status === 404) {
+    throw new Error(`Ollama 里没有模型 ${body.model}。请先执行：npm run models（或 ollama pull ${body.model}）`);
+  }
   if (!response.ok) {
-    let detail = "";
-    try {
-      detail = (await response.text()).trim().slice(0, 300);
-    } catch {
-      // 忽略读取错误，保留状态码即可
-    }
-    if (response.status === 404) {
-      throw new Error(
-        `Ollama 里没有模型 ${body.model}。请先执行：npm run models（或 ollama pull ${body.model}）`,
-      );
-    }
+    const detail = (await response.text().catch(() => "")).trim().slice(0, 300);
     throw new Error(`Ollama ${path} 返回 HTTP ${response.status}：${detail}`);
   }
   return response;
 }
 
-async function post(path, body) {
-  return (await request(path, body)).json();
-}
-
 /** 把一批文本转成向量；返回数组顺序与输入一致。 */
 export async function embed(texts) {
-  if (!Array.isArray(texts) || texts.length === 0) return [];
-  const data = await post("/api/embed", {
+  if (texts.length === 0) return [];
+  const response = await request("/api/embed", {
     model: config.embedModel,
     input: texts,
     truncate: true, // 超长片段截断而不是直接报错
   });
-  const vectors = data.embeddings;
-  if (!Array.isArray(vectors) || vectors.length !== texts.length) {
-    throw new Error(
-      `Ollama 返回的向量数量不符：期望 ${texts.length}，实际 ${vectors?.length ?? "无"}`,
-    );
+  const { embeddings } = await response.json();
+  if (embeddings?.length !== texts.length || embeddings.some((v) => !v?.length)) {
+    throw new Error("Ollama 返回的向量数量不符或为空，请检查 EMBED_MODEL 是否正确");
   }
-  for (const vector of vectors) {
-    if (!Array.isArray(vector) || vector.length === 0) {
-      throw new Error("Ollama 返回了空向量，请检查 EMBED_MODEL 是否正确");
-    }
-  }
-  return vectors;
+  return embeddings;
 }
 
 /**
- * 流式对话：/api/chat 以 NDJSON 逐帧返回，message.thinking / message.content 都是增量片段。
+ * 流式对话：/api/chat 每行返回一个 JSON（NDJSON），message.thinking / message.content 都是增量片段。
  * onDelta(type, text) 实时收到增量（type 为 "thinking" 或 "content"）；
- * 返回累积后的完整 message（role/content/thinking/tool_calls），结构与原来的非流式一致。
+ * 返回累积后的完整 message：{ role, content, thinking, tool_calls? }。
  * tool_calls 由模型在流末尾一次性给出，不会分片。
  */
 export async function chatStream({ messages, tools, onDelta }) {
-  const body = {
+  const response = await request("/api/chat", {
     model: config.chatModel,
     messages,
+    tools,
     stream: true,
     keep_alive: "10m",
     // Ollama 默认上下文较小，中文 RAG 资料容易被静默截断
     options: { temperature: 0.1, num_ctx: 16384 },
-  };
-  if (tools?.length) body.tools = tools;
+  });
 
-  const response = await request("/api/chat", body);
-  if (!response.body) throw new Error("Ollama /api/chat 的流式响应里没有 body");
+  const message = { role: "assistant", content: "", thinking: "" };
+  const lines = createInterface({ input: Readable.fromWeb(response.body), crlfDelay: Infinity });
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let content = "";
-  let thinking = "";
-  let toolCalls = [];
-  let finished = false;
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    const chunk = JSON.parse(line);
+    if (chunk.error) throw new Error(`Ollama /api/chat 返回错误：${chunk.error}`);
 
-  const handleLine = (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    let chunk;
-    try {
-      chunk = JSON.parse(trimmed);
-    } catch {
-      return; // 忽略不完整或空行
+    const { thinking, content, tool_calls: toolCalls } = chunk.message ?? {};
+    if (thinking) {
+      message.thinking += thinking;
+      onDelta?.("thinking", thinking);
     }
-    if (chunk.error) throw new Error(`Ollama /api/chat 流式返回错误：${chunk.error}`);
-    const message = chunk.message;
-    if (message) {
-      if (typeof message.thinking === "string" && message.thinking) {
-        thinking += message.thinking;
-        onDelta?.("thinking", message.thinking);
-      }
-      if (typeof message.content === "string" && message.content) {
-        content += message.content;
-        onDelta?.("content", message.content);
-      }
-      if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
-        toolCalls = toolCalls.concat(message.tool_calls);
-      }
+    if (content) {
+      message.content += content;
+      onDelta?.("content", content);
     }
-    if (chunk.done === true) finished = true;
-  };
-
-  while (!finished) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let newline;
-    while ((newline = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      handleLine(line);
-      if (finished) break;
-    }
+    if (toolCalls?.length) message.tool_calls = [...(message.tool_calls ?? []), ...toolCalls];
+    if (chunk.done) break;
   }
-  if (!finished && buffer.trim()) handleLine(buffer); // 最后一行可能没有换行符
-  await reader.cancel().catch(() => {});
-
-  const message = { role: "assistant", content, thinking };
-  if (toolCalls.length) message.tool_calls = toolCalls;
   return message;
 }
 
@@ -144,11 +95,9 @@ export async function chatStream({ messages, tools, onDelta }) {
 export async function listModels() {
   let response;
   try {
-    response = await fetch(`${config.ollamaHost}/api/tags`, {
-      signal: AbortSignal.timeout(10_000),
-    });
+    response = await fetch(`${config.ollamaHost}/api/tags`, { signal: AbortSignal.timeout(10_000) });
   } catch (err) {
-    throw ollamaDown(err);
+    throw ollamaDown(err.message);
   }
   if (!response.ok) throw new Error(`Ollama /api/tags 返回 HTTP ${response.status}`);
   const data = await response.json();

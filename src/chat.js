@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { config } from "./config.js";
-import { answerOnce, formatSources } from "./agent.js";
-import { createPrinter } from "./output.js";
+import { answerOnce } from "./agent.js";
+import { createPrinter, formatSources } from "./output.js";
 import { ingestDocs } from "./ingest.js";
 import { resetCollection } from "./store.js";
 import { checkAll } from "./doctor.js";

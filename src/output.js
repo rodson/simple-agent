@@ -1,4 +1,17 @@
-import { formatSources } from "./agent.js";
+/**
+ * 拼出可直接打印的「参考来源」文本。
+ * 只有本次确实用到网络来源时，才给每条加上 [本地] / [网络] 标签。
+ */
+export function formatSources(sources) {
+  if (sources.length === 0) return "";
+  const labeled = sources.some((item) => item.kind === "web");
+  const lines = sources.map((item) => {
+    if (item.kind === "web") return `  - [网络] ${item.title} ${item.url}`;
+    const score = item.similarity === null ? "" : `，相似度 ${item.similarity.toFixed(2)}`;
+    return `  - ${labeled ? "[本地] " : ""}${item.source}（片段 ${item.chunk + 1}${score}）`;
+  });
+  return `\n参考来源：\n${lines.join("\n")}`;
+}
 
 /**
  * 把 answerOnce 推来的流式增量实时写到终端，两个 CLI 入口共用。

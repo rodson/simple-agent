@@ -1,5 +1,5 @@
 {
-  "name": "local-kb-agent",
+  "name": "simple-agent",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -14,7 +14,8 @@
     "ingest": "node src/ingest.js",
     "reset": "node src/ingest.js --reset",
     "start": "node src/chat.js",
-    "ask": "node src/ask.js"
+    "ask": "node src/ask.js",
+    "test": "node --test"
   },
   "dependencies": {
     "chromadb": "^3.5.0"

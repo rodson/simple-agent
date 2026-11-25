@@ -1,36 +1,14 @@
-import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** 极简 .env 读取器：只解析 KEY=VALUE；已存在的系统环境变量优先。 */
-function loadEnvFile() {
-  let content;
-  try {
-    content = readFileSync(path.join(projectRoot, ".env"), "utf8");
-  } catch (err) {
-    if (err.code === "ENOENT") return; // 没有 .env 就直接用默认值
-    throw err;
-  }
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq < 1) continue;
-    const key = trimmed.slice(0, eq).trim();
-    let value = trimmed.slice(eq + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    if (process.env[key] === undefined) process.env[key] = value;
-  }
+// Node 内置的 .env 读取：只填充尚未设置的变量，所以系统环境变量优先；没有 .env 就用默认值
+try {
+  process.loadEnvFile(path.join(projectRoot, ".env"));
+} catch (err) {
+  if (err.code !== "ENOENT") throw err;
 }
-
-loadEnvFile();
 
 const env = process.env;
 
