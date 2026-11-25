@@ -9,15 +9,28 @@
   },
   "scripts": {
     "chroma": "chroma run --path ./chroma-data --host ${CHROMA_HOST:-127.0.0.1} --port ${CHROMA_PORT:-8000}",
-    "models": "ollama pull qwen3.5:9b && ollama pull bge-m3",
-    "doctor": "node src/doctor.js",
-    "ingest": "node src/ingest.js",
-    "reset": "node src/ingest.js --reset",
-    "start": "node src/chat.js",
-    "ask": "node src/ask.js",
-    "test": "node --test"
+    "models": "node src/cli/models.js",
+    "doctor": "node src/cli/doctor.js",
+    "ingest": "node src/cli/ingest.js",
+    "reset": "node src/cli/ingest.js --reset",
+    "start": "node src/cli/chat.js",
+    "ask": "node src/cli/ask.js",
+    "test": "node --test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -p .",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm test"
   },
   "dependencies": {
     "chromadb": "^3.5.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.6",
+    "eslint": "^10.15.0",
+    "globals": "^17.14.0",
+    "prettier": "^3.10.1",
+    "typescript": "^7.0.2"
   }
 }

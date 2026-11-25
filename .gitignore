@@ -4,4 +4,7 @@ chroma-data/
 .DS_Store
 *.log
 
-docs
+# 个人文档不进仓库，只保留两份示例
+docs/*
+!docs/about-me.md
+!docs/notes.md
