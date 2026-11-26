@@ -2,7 +2,7 @@
 // @ts-check
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cleanRewrite, createAgent, parseArguments } from "../src/core/agent.js";
+import { buildSystemPrompt, cleanRewrite, createAgent, parseArguments } from "../src/core/agent.js";
 import { loadConfig } from "../src/core/config.js";
 import { fakeChat, toolCall } from "./helpers.js";
 
@@ -289,4 +289,22 @@ test("重试后仍为空时给出兜底提示，不会无限循环", async () =>
   const result = await createAgent({ config: baseConfig, chat, searchLocal }).answer("问题");
   assert.equal(calls.length, 2);
   assert.equal(result.answer, "（模型没有返回内容）");
+});
+
+test("buildSystemPrompt：未开联网时只提本地知识库，不出现 search_web", () => {
+  const prompt = buildSystemPrompt(false);
+  assert.doesNotMatch(prompt, /search_web|网络/);
+  assert.match(prompt, /知识库中没有相关信息/);
+});
+
+test("buildSystemPrompt：开启联网时是一份完整规则，不靠「放宽」前文，编号连续", () => {
+  const prompt = buildSystemPrompt(true);
+  assert.match(prompt, /search_web/);
+  assert.doesNotMatch(prompt, /放宽|只能依据 search_knowledge_base/);
+  assert.doesNotMatch(prompt, /「知识库中没有相关信息」/); // 兜底话术只有一种，不与本地模式混用
+  const numbers = [...prompt.matchAll(/^(\d+)\. /gm)].map((m) => Number(m[1]));
+  assert.deepEqual(
+    numbers,
+    numbers.map((_, i) => i + 1),
+  );
 });
